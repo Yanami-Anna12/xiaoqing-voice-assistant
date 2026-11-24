@@ -1,0 +1,18 @@
+# 运行期产物，不提交
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ruff_cache/
+.pytest_cache/
+
+# 模型与本地数据
+models/
+data/
+
+# 密钥
+.env
+
+# 编辑器
+.vscode/
+.idea/
