@@ -65,7 +65,7 @@ sequenceDiagram
     L-->>G: "北京现在晴，气温18度…"
     G->>G: memory.add(user, assistant)
     G-->>W: TurnResult(text, trace)
-    W-->>UI: replied 信号 → 气泡 + 工具标签
+    W-->>UI: replied 信号 → 气泡（工具结果已并入回答，明细只写日志）
     Note over W: 状态切到「说话」
     W->>S: speak(text)
     S-->>W: 播放完毕
@@ -143,5 +143,5 @@ return llm.complete(messages, tools=None).content
 | 功能全跑通 | 语音/打字两条入口都走同一套 Agent；工具、记忆、朗读、界面全链路 |
 | 代码结构清晰 | core 分层 + 接口抽象 + 工厂降级 + 分层自检脚本 |
 | 本地模型加分 | Vosk 本地识别（离线）、可选 Ollama 本地大模型 |
-| 创新点 | 唤醒词/别名/阈值均可改；一句话唤醒+指令；工具轨迹可视化；三条降级链 |
+| 创新点 | 唤醒词/别名/阈值均可改；一句话唤醒+指令；唤醒应答可配置；工具调用明细入库日志 |
 | 体验自然 | 深色界面、实时波形、状态胶囊、思考占位、朗读防回声、Edge 神经语音 |

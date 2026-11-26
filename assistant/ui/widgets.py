@@ -148,7 +148,6 @@ class ChatBubble(QFrame):
         self,
         role: str,
         text: str,
-        trace: list[dict] | None = None,
         meta: str = "",
         on_speak: Callable[[ChatBubble], None] | None = None,
         parent=None,
@@ -196,20 +195,6 @@ class ChatBubble(QFrame):
         body.setTextInteractionFlags(Qt.TextSelectableByMouse)
         body.setStyleSheet(f"color: {COLORS['text']}; background: transparent;")
         outer.addWidget(body)
-
-        if trace:
-            for item in trace:
-                chip_text = item.get("summary") or item.get("name", "工具调用")
-                chip = QLabel(f"工具 · {chip_text}")
-                chip.setWordWrap(True)
-                chip.setFixedWidth(body_width)
-                chip.setStyleSheet(
-                    "background-color: rgba(251, 191, 36, 0.10);"
-                    "border: 1px solid rgba(251, 191, 36, 0.28);"
-                    "border-radius: 8px; padding: 5px 9px;"
-                    f"color: {COLORS['warn']}; font-size: 11px;"
-                )
-                outer.addWidget(chip)
 
         if is_system:
             self.setStyleSheet(
@@ -296,8 +281,8 @@ class ChatView(QScrollArea):
         self.setWidget(self._container)
 
     # ---------- 对外 ----------
-    def add_message(self, role: str, text: str, trace: list[dict] | None = None, meta: str = "") -> ChatBubble:
-        bubble = ChatBubble(role, text, trace, meta or time.strftime("%H:%M"), on_speak=self._on_speak)
+    def add_message(self, role: str, text: str, meta: str = "") -> ChatBubble:
+        bubble = ChatBubble(role, text, meta or time.strftime("%H:%M"), on_speak=self._on_speak)
         row = QWidget()
         row.setAttribute(Qt.WA_TranslucentBackground)
         layout = QHBoxLayout(row)

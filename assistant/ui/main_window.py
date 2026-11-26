@@ -332,8 +332,9 @@ class MainWindow(QMainWindow):
         self._chat.add_message("user", text, meta=meta)
 
     def _on_replied(self, text: str, trace: list) -> None:
+        # 工具调用明细只写日志，不在气泡下面展示，保持对话干净
         self._hide_typing()
-        self._chat.add_message("assistant", text, trace=list(trace or []))
+        self._chat.add_message("assistant", text)
 
     def _on_notice(self, level: str, text: str) -> None:
         color = {

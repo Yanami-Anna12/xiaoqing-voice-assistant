@@ -47,7 +47,6 @@ def main() -> int:
     window._chat.add_message(
         "assistant",
         "北京现在晴，气温 18 摄氏度，体感 17 度，湿度 45%，适合出门走走。",
-        trace=[{"name": "get_weather", "summary": "get_weather(city=北京) → 北京现在晴，18°C"}],
     )
     window._chat.add_message("user", "我叫阿伟", meta="键盘输入")
     window._chat.add_message("assistant", "你好，阿伟，很高兴认识你。")

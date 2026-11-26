@@ -36,8 +36,8 @@ ITEMS = [
     (
         "3",
         "#fbbf24",
-        [QRectF(455, 448, 575, 42)],
-        "调工具：回复气泡下方的黄色工具条，展示模型自己决定调用的 get_weather / calculate 及返回结果",
+        [QRectF(455, 396, 570, 58)],
+        "调工具：模型自己决定调用天气/时间/计算器，结果直接写进回答；调用明细记在 data/logs/assistant.log",
     ),
     (
         "4",
@@ -89,7 +89,7 @@ def main() -> int:
         badges = {
             "1": QPointF(30, 168),
             "2": QPointF(30, 368),
-            "3": QPointF(441, 467),
+            "3": QPointF(426, 425),
             "4": QPointF(1052, 396),
             "5": QPointF(24, 26),
         }
