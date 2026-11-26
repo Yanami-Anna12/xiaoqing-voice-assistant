@@ -94,7 +94,8 @@ class ASRConfig:
     backend: str = "vosk"  # vosk | mock
     model_path: str = str(MODELS_DIR / "vosk-model-small-cn-0.22")
     sample_rate: int = 16000
-    silence_ms: int = 600  # 说完多久判定为一句结束（太长会拖慢应答）
+    device: int | None = None  # 麦克风设备索引；None=系统默认
+    silence_ms: int = 800  # 说完多久判定为一句结束；太短会把长句切两半
     silence_start_dbfs: float = -38.0  # VAD：开始说话的阈值
     silence_continue_dbfs: float = -46.0  # VAD：说话过程中的阈值（滞回）
     max_utterance_ms: int = 12000  # 单句最长拾音时间

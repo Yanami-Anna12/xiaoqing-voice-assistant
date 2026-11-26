@@ -4,7 +4,7 @@
 
 | # | 题目要求 | 本项目的做法 |
 |---|---------|-------------|
-| 1 | 唤醒 + 听写：喊名字唤醒，语音转中文 | 16k 麦克风采集 + 能量 VAD 切句 + **本地 Vosk 中文模型**识别；识别文本里匹配唤醒词即唤醒，别名 + 模糊匹配兜底；唤醒后先应一声（可关、可改）再进入聆听 |
+| 1 | 唤醒 + 听写：喊名字唤醒，语音转中文 | 16k 麦克风采集 + 能量 VAD 切句 + **本地 Vosk 中文模型**识别；识别文本里匹配唤醒词即唤醒，别名 + 模糊匹配兜底；唤醒后先应一声（可关、可改）再进入聆听。识别不准可在设置里切**云端指令识别**（DashScope Paraformer，唤醒仍走本地） |
 | 2 | 接大模型：记住最近 3 轮对话 | DeepSeek（OpenAI 兼容协议）流式无关的 chat 调用；`ConversationMemory` 定长队列保存最近 3 轮 user/assistant |
 | 3 | 调工具：模型自己判断，并执行 | 标准 function calling：`get_weather` / `get_current_time` / `calculate`，Agent 负责"调工具→回填结果→再问一次"的循环，最多 3 轮 |
 | 4 | 读出来 + 显示：TTS 朗读，界面显示对话 | Edge-TTS 神经语音，失败自动退 **Windows 离线语音（PowerShell）**，再退静默；气泡只显示回答正文，每条都能单独点喇叭重读 |
@@ -105,7 +105,9 @@ C:\Users\12966\AppData\Local\Programs\Python\Python311\python.exe app.py
 7. 不想说话：底部输入框直接打字，回车发送；
 8. 左侧「清空记忆」= 让它忘掉前 3 轮。
 
-设置面板可以改：唤醒词、唤醒别名、唤醒后是否应声、回应语（**列表里一句一条，支持句子里带逗号**）、唤醒方式（语音/按钮）、识别后端、默认城市、模型地址/名称/Key、记忆轮数、语音开关和音色。
+设置面板可以改：唤醒词、唤醒别名、唤醒后是否应声、回应语（**列表里一句一条，支持句子里带逗号**）、唤醒方式（语音/按钮）、识别后端、麦克风、默认城市、模型地址/名称/Key、记忆轮数、语音开关和音色。
+
+> 识别不准的三板斧：① 设置里换一个麦克风（蓝牙耳麦最差）；② 识别后端切成「云端识别」，指令用阿里 Paraformer，准确率明显更高（需要 `DASHSCOPE_API_KEY`，按量计费/有免费额度，唤醒 word 仍走本地不花钱）；③ 把常被听错的名字加进「唤醒别名」。
 
 ![设置面板](docs/images/settings.png)
 
@@ -129,6 +131,7 @@ python tools\wake_ack_test.py       # 喊「小清」→ 应答 → 聆听 → �
 python tools\tts_fallback_test.py   # 在线 TTS 挂了要换离线语音，不能静默
 python tools\tts_watchdog_test.py   # 播放卡死时超时强停，状态能回来
 python tools\ui_wiring_test.py      # 界面按钮是否真的驱动了工作线程（14 项）
+python tools\cloud_asr_test.py      # 可选：云端指令识别（需 DASHSCOPE_API_KEY，无 Key 自动 SKIP）
 python tools\preview_ui.py          # 生成界面图 data/preview.png
 ```
 
@@ -159,6 +162,7 @@ python tools\preview_ui.py          # 生成界面图 data/preview.png
 |------|------|
 | 一直没有声音输入 | 系统设置里把默认输入设备设成麦克风；程序里「麦克风」会显示"不可用（可打字）" |
 | 喊了名字没反应 | 看状态栏"听到：xxx"的识别结果；小模型容易听岔，把识别出的字加到「唤醒别名」里；或调低设置里的模糊阈值 |
+| 识别不准、老是转错 | 先换麦克风（设置里选，蓝牙耳麦最差）；仍不满意就把「识别后端」切到「云端识别」（DashScope Paraformer，更准，需 Key） |
 | 回答是"我刚查了一下…"这种演示语气 | 没配 API Key，正在用离线演示模型 |
 | 朗读没声音 | 先看侧栏「播报」显示的是哪个后端；Edge 失败会自动切 Windows 离线语音并提示。若都失败，检查系统默认输出设备；也可把 `data/config.json` 里 `tts.backend` 改成 `sapi` 强制离线 |
 | 天气查不到 | 天气走 Open-Meteo 免费接口，需要联网 |

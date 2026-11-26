@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
@@ -123,6 +124,112 @@ class VoskASR(ASRBackend):
     def close(self) -> None:
         self._rec = None
         self._model = None
+
+
+class DashScopeASR(ASRBackend):
+    """阿里云 Paraformer 实时识别（走 DashScope，需联网和 DASHSCOPE_API_KEY）。
+
+    只用在"唤醒之后的指令"上：唤醒词继续用本地 Vosk，这样环境噪声再多也不会
+    一直烧云端额度。准确率比 vosk-model-small-cn 高一档，带标点。
+    """
+
+    name = "DashScope Paraformer（云端）"
+    streaming = True
+
+    def __init__(self, api_key: str, model: str = "paraformer-realtime-v2"):
+        try:
+            import dashscope
+        except Exception as exc:  # noqa: BLE001
+            raise ASRError(f"dashscope 未安装：{exc}") from exc
+        if not api_key.strip():
+            raise ASRError("没有 DASHSCOPE_API_KEY，无法用云端识别")
+        dashscope.api_key = api_key.strip()
+        self._dashscope = dashscope
+        self.model = model
+        self._rec = None
+        self._parts: list[str] = []
+        self._done = threading.Event()
+        self._error = ""
+
+    def start_stream(self, sample_rate: int = 16000) -> None:
+        from dashscope.audio.asr import Recognition, RecognitionCallback
+
+        self._parts = []
+        self._error = ""
+        self._done.clear()
+        owner = self
+
+        class _Callback(RecognitionCallback):
+            def on_open(self) -> None:
+                pass
+
+            def on_event(self, result) -> None:
+                try:
+                    sentence = result.get_sentence()
+                except Exception:  # noqa: BLE001
+                    return
+                if isinstance(sentence, dict) and sentence.get("sentence_end"):
+                    text = str(sentence.get("text") or "").strip()
+                    if text:
+                        owner._parts.append(text)
+
+            def on_complete(self) -> None:
+                owner._done.set()
+
+            def on_error(self, result) -> None:
+                owner._error = str(result)[:200]
+                owner._done.set()
+
+            def on_close(self) -> None:
+                pass
+
+        self._rec = Recognition(
+            model=self.model,
+            callback=_Callback(),
+            format="pcm",
+            sample_rate=sample_rate,
+        )
+        self._rec.start()
+
+    def feed_stream(self, pcm: bytes) -> None:
+        if self._rec is None or not pcm:
+            return
+        try:
+            self._rec.send_audio_frame(pcm)
+        except Exception as exc:  # noqa: BLE001
+            self._error = f"发送音频失败：{exc}"
+
+    def finish_stream(self) -> str:
+        rec, self._rec = self._rec, None
+        if rec is None:
+            return ""
+        try:
+            rec.stop()
+        except Exception as exc:  # noqa: BLE001
+            self._error = f"结束识别失败：{exc}"
+        self._done.wait(8.0)
+        text = "".join(self._parts).strip()
+        if not text and self._error:
+            log.warning("云端识别失败：%s", self._error)
+        return text
+
+    def transcribe(self, pcm: bytes, sample_rate: int = 16000) -> str:
+        self.start_stream(sample_rate)
+        for i in range(0, len(pcm), 3200):
+            self.feed_stream(pcm[i:i + 3200])
+        return self.finish_stream()
+
+    def cancel(self) -> None:
+        """不等结果直接关掉连接（聆听超时、没说话时用）。"""
+        rec, self._rec = self._rec, None
+        if rec is not None:
+            try:
+                rec.stop()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def close(self) -> None:
+        self.cancel()
 
 
 class MockASR(ASRBackend):

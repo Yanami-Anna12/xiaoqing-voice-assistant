@@ -80,7 +80,7 @@ def main() -> int:
     cfg.wake.ack_texts = ["我在呢"]
     cfg.wake.followup_timeout_ms = 1500
 
-    pipeline.AudioCapture = lambda sample_rate=16000: FakeCapture(wake_pcm + silent_tail)  # type: ignore[assignment]
+    pipeline.AudioCapture = lambda sample_rate=16000, device=None: FakeCapture(wake_pcm + silent_tail)  # type: ignore[assignment]
     worker = pipeline.AssistantWorker(cfg)
 
     states: list[str] = []

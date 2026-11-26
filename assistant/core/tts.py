@@ -359,7 +359,8 @@ class TTSClient:
         # 全部失败：静音，但要明确告诉用户（这条不能被冷却吞掉）
         self._active = MockTTS()
         self.name = self._active.name
-        self._notify("没有可用的语音合成，回答只显示文字", force=True)
+        if self.backends:
+            self._notify("没有可用的语音合成，回答只显示文字", force=True)
         self._active.speak(text)
 
 

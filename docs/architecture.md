@@ -91,6 +91,10 @@ VAD 的两个阈值是**滞回**的（开始 -38dBFS、持续 -46dBFS），避�
 TTS 后端失败只进 60 秒冷却、不永久剔除：Edge 掉线时会立刻换 Windows 离线语音并提示，
 网络恢复后自动回到 Edge。
 
+识别也可以分工：默认全本地 Vosk；设置里选「云端识别」后，**唤醒词仍用本地 Vosk**
+（噪声再多也不烧云端额度），只有唤醒后的指令走 DashScope Paraformer。云端返回带标点，
+准确率更高，但需要 `DASHSCOPE_API_KEY` 且按量计费；云端失败会自动回退本地 Vosk 再识别一次。
+
 ## 4. 工具调用循环
 
 ```
@@ -123,7 +127,7 @@ return llm.complete(messages, tools=None).content
 
 | 环节 | 首选 | 失败后退到 | 界面提示 |
 |------|------|-----------|---------|
-| 识别 | Vosk 本地模型 | 演示台词（MockASR） | 「已降级为演示识别」 |
+| 识别 | 本地 Vosk（唤醒+指令默认）；可选：指令走 DashScope Paraformer | 演示识别 | 侧栏「识别」显示实际后端 |
 | 大模型 | DeepSeek | 离线演示模型（MockLLM） | 「没有配置 API Key…」 |
 | 朗读 | Edge-TTS | Windows 离线语音（PowerShell 调 System.Speech）→ 静默 | 侧栏「播报」显示实际后端，降级时状态栏提示 |
 | 麦克风 | sounddevice 采集 | 只打字 | 「麦克风不可用（可打字）」 |

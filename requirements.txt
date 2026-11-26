@@ -5,4 +5,5 @@ vosk>=0.3.45         # 离线中文语音识别
 openai>=1.30         # DeepSeek（OpenAI 兼容协议）
 requests>=2.31       # 天气工具
 edge-tts>=6.1        # 在线自然语音合成（失败自动退 Windows 离线语音）
+dashscope>=1.20      # 可选：云端指令识别（设置里选"云端识别"才用）
 python-dotenv>=1.0   # 从 .env 读 API Key（可选）

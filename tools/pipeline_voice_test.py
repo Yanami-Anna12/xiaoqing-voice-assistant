@@ -83,7 +83,7 @@ def main() -> int:
     # 结尾补 2 秒静音，否则 VAD 等不到"说完"的静音段
     silent_tail = b"\x00\x00" * 16000 * 2
     fake = FakeCapture(pcm + silent_tail)
-    pipeline.AudioCapture = lambda sample_rate=16000: fake  # type: ignore[assignment]
+    pipeline.AudioCapture = lambda sample_rate=16000, device=None: fake  # type: ignore[assignment]
 
     worker = pipeline.AssistantWorker(cfg)
     result: dict[str, object] = {}

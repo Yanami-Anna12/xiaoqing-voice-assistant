@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..config import AppConfig, get_config
+from ..core.audio import AudioCapture
 from ..core.pipeline import STATE_OFFLINE, AssistantWorker
 from .theme import COLORS, STATE_HINTS, build_stylesheet
 from .widgets import ChatBubble, ChatView, StatusPill, Waveform
@@ -601,10 +602,31 @@ class SettingsDialog(QDialog):
         form.addRow("唤醒回应", ack_box)
 
         self._asr_backend = QComboBox()
-        self._asr_backend.addItem("Vosk 本地模型", "vosk")
-        self._asr_backend.addItem("演示识别（不出声也能跑流程）", "mock")
-        self._asr_backend.setCurrentIndex(0 if cfg.asr.backend == "vosk" else 1)
+        self._asr_backend.addItem("Vosk 本地（默认，离线）", "vosk")
+        self._asr_backend.addItem("云端识别（指令更准，需联网）", "hybrid")
+        self._asr_backend.addItem("演示识别", "mock")
+        self._asr_backend.setToolTip(
+            "云端识别：唤醒词仍用本地 Vosk，只有唤醒后的指令走 DashScope Paraformer，"
+            "需要 DASHSCOPE_API_KEY，按量计费"
+        )
+        self._asr_backend.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self._asr_backend.setMinimumContentsLength(14)
+        current = cfg.asr.backend
+        index = self._asr_backend.findData(current)
+        self._asr_backend.setCurrentIndex(index if index >= 0 else 0)
         form.addRow("识别后端", self._asr_backend)
+
+        self._mic_device = QComboBox()
+        self._mic_device.addItem("系统默认", None)
+        for device in AudioCapture.list_input_devices():
+            label = device.name if len(device.name) <= 24 else device.name[:24] + "…"
+            self._mic_device.addItem(f"{device.index} · {label}", device.index)
+        index = self._mic_device.findData(cfg.asr.device)
+        self._mic_device.setCurrentIndex(index if index >= 0 else 0)
+        self._mic_device.setToolTip("识别不准时，换一个麦克风试试（蓝牙耳麦通常最差）")
+        self._mic_device.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self._mic_device.setMinimumContentsLength(14)
+        form.addRow("麦克风", self._mic_device)
 
         self._alias_city = QLineEdit(cfg.tools.default_city)
         form.addRow("默认城市", self._alias_city)
@@ -682,6 +704,7 @@ class SettingsDialog(QDialog):
         if ack_phrases:
             self.cfg.wake.ack_texts = ack_phrases
         self.cfg.asr.backend = self._asr_backend.currentData()
+        self.cfg.asr.device = self._mic_device.currentData()
         self.cfg.tools.default_city = self._alias_city.text().strip() or "北京"
         self.cfg.llm.base_url = self._base_url.text().strip() or self.cfg.llm.base_url
         self.cfg.llm.model = self._model.text().strip() or self.cfg.llm.model

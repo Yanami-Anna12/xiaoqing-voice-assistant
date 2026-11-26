@@ -47,7 +47,7 @@ def main() -> int:
     cfg.tts.enabled = True
     cfg.wake.mode = "push"
 
-    pipeline.AudioCapture = lambda sample_rate=16000: SilentCapture()  # type: ignore[assignment]
+    pipeline.AudioCapture = lambda sample_rate=16000, device=None: SilentCapture()  # type: ignore[assignment]
     worker = pipeline.AssistantWorker(cfg)
 
     states: list[str] = []

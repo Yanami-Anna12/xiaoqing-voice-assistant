@@ -15,10 +15,10 @@ from dataclasses import dataclass, field
 
 from PySide6.QtCore import QThread, Signal
 
-from ..config import AppConfig
+from ..config import AppConfig, read_env
 from ..logging_setup import get_logger
 from .agent import AssistantAgent, TurnResult
-from .asr import ASRBackend, create_asr
+from .asr import ASRBackend, DashScopeASR, create_asr
 from .audio import AudioCapture, AudioUnavailable, UtteranceSegmenter, rms_dbfs
 from .llm import BaseLLM, DeepSeekClient, LLMError, MockLLM
 from .memory import ConversationMemory
@@ -49,12 +49,13 @@ def build_llm(cfg: AppConfig) -> tuple[BaseLLM, str]:
 class VoiceServices:
     """启动后一次性创建的后端集合，方便界面展示状态。"""
 
-    asr: ASRBackend
+    asr: ASRBackend  # 唤醒用的（本地 Vosk）
     tts: TTSClient
     llm: BaseLLM
     agent: AssistantAgent
     memory: ConversationMemory
     wake: WakeWordDetector
+    asr_cmd: ASRBackend | None = None  # 指令用的；云端模式时和唤醒不是同一个
     notes: list[str] = field(default_factory=list)
 
 
@@ -81,6 +82,8 @@ class AssistantWorker(QThread):
         self._speaking = False
         self._listen_deadline = 0.0
         self._audio_ok = False
+        self._asr_streaming = False
+        self._cmd_streaming = False
 
     # ================================================================ 对外接口
     def submit_text(self, text: str) -> None:
@@ -134,7 +137,11 @@ class AssistantWorker(QThread):
             return
         self._services = services
         info = {
-            "asr": services.asr.name,
+            "asr": (
+                services.asr.name
+                if services.asr_cmd is services.asr
+                else f"{services.asr.name}（唤醒）/ {services.asr_cmd.name}（指令）"
+            ),
             "tts": services.tts.name,
             "llm": services.agent.model_name,
             "wake": self.cfg.wake.word,
@@ -157,6 +164,18 @@ class AssistantWorker(QThread):
     def _init_services(self) -> VoiceServices:
         cfg = self.cfg
         asr, asr_note = create_asr(cfg.asr)
+        asr_cmd = asr
+        notes = [asr_note]
+        if cfg.asr.backend == "hybrid":
+            key = read_env("DASHSCOPE_API_KEY")
+            if not key:
+                notes.append("没读到 DASHSCOPE_API_KEY，指令识别仍用本地 Vosk")
+            else:
+                try:
+                    asr_cmd = DashScopeASR(key)
+                    notes.append("指令识别：DashScope Paraformer（云端，更准）")
+                except Exception as exc:  # noqa: BLE001
+                    notes.append(f"云端识别不可用（{exc}），指令仍用本地 Vosk")
         tts = create_tts(cfg.tts)
         tts.on_notice = lambda message: self.notice.emit("warn", message)
         llm, llm_note = build_llm(cfg)
@@ -166,17 +185,29 @@ class AssistantWorker(QThread):
         wake = WakeWordDetector(cfg.wake)
         self.memory_changed.emit(memory.used, memory.capacity_rounds)
 
-        # 麦克风：拿不到就降级成"打字也能用"
-        audio = AudioCapture(cfg.asr.sample_rate)
+        # 麦克风：优先用设置里选的设备；打不开就退回系统默认，再不行就只打字
+        audio = AudioCapture(cfg.asr.sample_rate, device=cfg.asr.device)
         try:
             audio.start()
             self._audio = audio
             self._audio_ok = True
         except AudioUnavailable as exc:
-            self._audio = None
-            self._audio_ok = False
-            asr_note += f"；麦克风不可用（{exc}）"
-            log.warning("麦克风不可用：%s", exc)
+            log.warning("麦克风不可用（设备 %s）：%s", cfg.asr.device, exc)
+            if cfg.asr.device is not None:
+                audio = AudioCapture(cfg.asr.sample_rate)
+                try:
+                    audio.start()
+                    self._audio = audio
+                    self._audio_ok = True
+                    asr_note += "；所选麦克风打不开，已退回系统默认"
+                except AudioUnavailable as exc2:
+                    self._audio = None
+                    self._audio_ok = False
+                    asr_note += f"；麦克风不可用（{exc2}）"
+            else:
+                self._audio = None
+                self._audio_ok = False
+                asr_note += f"；麦克风不可用（{exc}）"
 
         return VoiceServices(
             asr=asr,
@@ -185,7 +216,8 @@ class AssistantWorker(QThread):
             agent=agent,
             memory=memory,
             wake=wake,
-            notes=[asr_note, llm_note, f"语音播报：{tts.name}"],
+            asr_cmd=asr_cmd,
+            notes=[*notes, llm_note, f"语音播报：{tts.name}"],
         )
 
     def _teardown(self) -> None:
@@ -215,6 +247,7 @@ class AssistantWorker(QThread):
 
         services = self._services
         self._asr_streaming = bool(services and getattr(services.asr, "streaming", False))
+        self._cmd_streaming = bool(services and services.asr_cmd and getattr(services.asr_cmd, "streaming", False))
         self._reset_asr_stream()
 
         while not self._stop:
@@ -236,10 +269,13 @@ class AssistantWorker(QThread):
                 continue
 
             services = self._services
-            wants_speech = self._state == STATE_LISTENING or (
-                self._state == STATE_SLEEPING and cfg.wake.mode == "voice"
-            )
-            if services and self._asr_streaming and wants_speech:
+            if services and self._state == STATE_LISTENING and self._cmd_streaming:
+                try:
+                    services.asr_cmd.feed_stream(chunk)  # 指令走云端识别
+                except Exception:  # noqa: BLE001
+                    log.exception("指令识别喂音频失败")
+                    self._cmd_streaming = False
+            elif services and self._asr_streaming and self._state == STATE_SLEEPING and cfg.wake.mode == "voice":
                 try:
                     services.asr.feed_stream(chunk)  # 边说边解码，说完就有结果
                 except Exception:  # noqa: BLE001 - 流式失败还能退回整句识别
@@ -249,7 +285,7 @@ class AssistantWorker(QThread):
             if self._state == STATE_LISTENING:
                 segment = segmenter.feed(chunk)
                 if segment:
-                    text = self._take_transcript(segment)
+                    text = self._take_transcript(segment, command=True)
                     if text:
                         self._recognize_and_reply(text)
                 else:
@@ -262,32 +298,43 @@ class AssistantWorker(QThread):
                         self._try_wake(text, segmenter)
 
     # ---------------------------------------------------------------- 识别
-    def _take_transcript(self, segment: bytes) -> str:
-        """优先拿流式识别的结果；没有流式能力时才整句识别。"""
+    def _take_transcript(self, segment: bytes, command: bool = False) -> str:
+        """优先拿流式识别的结果；没有流式能力时才整句识别。
+
+        command=True 时用指令后端（云端模式下是 Paraformer），否则用唤醒后端（本地 Vosk）。
+        """
         services = self._services
         if not services:
             return ""
+        backend = services.asr_cmd if (command and services.asr_cmd) else services.asr
+        streaming = self._cmd_streaming if command else self._asr_streaming
         started = time.perf_counter()
         text = ""
         stream_error = False
-        if self._asr_streaming:
+        if streaming:
             try:
-                text = services.asr.finish_stream()
+                text = backend.finish_stream()
             except Exception:  # noqa: BLE001
                 log.exception("流式识别取结果失败")
                 stream_error = True
-        if not text and (not self._asr_streaming or stream_error):
+        if not text and (not streaming or stream_error):
             try:
-                text = services.asr.transcribe(segment, self.cfg.asr.sample_rate)
+                text = backend.transcribe(segment, self.cfg.asr.sample_rate)
             except Exception as exc:  # noqa: BLE001
                 log.exception("识别失败")
                 self.notice.emit("error", f"识别出错：{exc}")
-        if self._asr_streaming:
+        if not text and command and backend is not services.asr:
+            # 云端没给结果时，用本地 Vosk 兜一下，总比"没听清"强
             try:
-                services.asr.start_stream(self.cfg.asr.sample_rate)
+                text = services.asr.transcribe(segment, self.cfg.asr.sample_rate)
+            except Exception:  # noqa: BLE001
+                log.exception("本地兜底识别失败")
+        if streaming and not command:
+            try:
+                backend.start_stream(self.cfg.asr.sample_rate)
             except Exception:  # noqa: BLE001
                 self._asr_streaming = False
-        log.info("识别耗时 %.0fms：%s", (time.perf_counter() - started) * 1000, text)
+        log.info("识别耗时 %.0fms（%s）：%s", (time.perf_counter() - started) * 1000, backend.name, text)
         return text
 
     def _reset_asr_stream(self) -> None:
@@ -301,6 +348,32 @@ class AssistantWorker(QThread):
         except Exception:  # noqa: BLE001
             log.exception("重置流式识别失败")
             self._asr_streaming = False
+
+    def _start_cmd_stream(self) -> None:
+        services = self._services
+        if not services or not self._cmd_streaming:
+            return
+        if services.asr_cmd is services.asr:
+            return  # 本地模式：唤醒用的那条流就是指令流，已在 _reset_asr_stream 里重置
+        try:
+            services.asr_cmd.start_stream(self.cfg.asr.sample_rate)
+        except Exception:  # noqa: BLE001
+            log.exception("启动指令识别失败")
+            self._cmd_streaming = False
+
+    def _close_cmd_stream(self) -> None:
+        """没等到说话就结束聆听时，把云端连接关掉，别占着。"""
+        services = self._services
+        if not services or not self._cmd_streaming or services.asr_cmd is services.asr:
+            return
+        cancel = getattr(services.asr_cmd, "cancel", None)
+        try:
+            if cancel is not None:
+                cancel()  # 不等结果，直接关连接
+            else:
+                services.asr_cmd.finish_stream()
+        except Exception:  # noqa: BLE001
+            log.debug("关闭指令识别连接失败", exc_info=True)
 
     # ---------------------------------------------------------------- 命令
     def _handle_commands(self, segmenter: UtteranceSegmenter) -> None:
@@ -380,8 +453,9 @@ class AssistantWorker(QThread):
             pass
 
     def _recognize_and_reply(self, text: str) -> None:
-        if not text:
-            self.notice.emit("warn", "没听清，再说一次？")
+        text = (text or "").strip()
+        if len(text) < 2:
+            self.notice.emit("warn", f"只听到「{text or '空'}」，没听清，再说一次？" if text else "没听清，再说一次？")
             self._set_state(STATE_SLEEPING)
             return
         self.level_changed.emit(0.0)
@@ -483,6 +557,7 @@ class AssistantWorker(QThread):
         if self._audio:
             self._audio.drain()  # 丢掉唤醒那一刻的尾音
         self._reset_asr_stream()  # 唤醒词那一段不要混进指令
+        self._start_cmd_stream()  # 云端模式下在这里开好连接
         self._listen_deadline = time.time() + timeout_ms / 1000
         self._set_state(STATE_LISTENING)
 
@@ -494,10 +569,11 @@ class AssistantWorker(QThread):
         segment = segmenter.flush()
         if not segment:
             self._reset_asr_stream()
+            self._close_cmd_stream()
             self._set_state(STATE_SLEEPING)
             self.notice.emit("warn", "没听到声音，已回到待唤醒")
             return
-        text = self._take_transcript(segment)
+        text = self._take_transcript(segment, command=True)
         self._recognize_and_reply(text)
 
     def _check_listen_timeout(self, segmenter: UtteranceSegmenter) -> None:
@@ -505,6 +581,7 @@ class AssistantWorker(QThread):
             self._listen_deadline = 0.0
             segmenter.reset()
             self._reset_asr_stream()
+            self._close_cmd_stream()
             self._set_state(STATE_SLEEPING)
             self.notice.emit("warn", "没听到内容，我先休息了")
 
