@@ -231,4 +231,22 @@ def build_stylesheet() -> str:
         border: 1px solid {c['border']};
         selection-background-color: rgba(94, 234, 212, 0.18);
     }}
+
+    /* 唤醒应答话术：一句一条，不用分隔符 */
+    QListWidget#AckList {{
+        background-color: rgba(255, 255, 255, 0.05);
+        border: 1px solid {c['border']};
+        border-radius: 8px;
+        padding: 4px;
+        outline: none;
+    }}
+    QListWidget#AckList::item {{
+        padding: 5px 8px;
+        border-radius: 6px;
+        color: {c['text']};
+    }}
+    QListWidget#AckList::item:selected {{
+        background-color: rgba(94, 234, 212, 0.18);
+        color: {c['text']};
+    }}
     """

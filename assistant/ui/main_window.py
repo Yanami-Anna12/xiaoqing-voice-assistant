@@ -5,11 +5,13 @@
 """
 from __future__ import annotations
 
+import re
 from typing import ClassVar
 
 from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import QColor, QIcon, QLinearGradient, QPainter, QPixmap
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -19,6 +21,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QProgressBar,
@@ -559,16 +563,41 @@ class SettingsDialog(QDialog):
         self._wake_mode.setCurrentIndex(0 if cfg.wake.mode == "voice" else 1)
         form.addRow("唤醒方式", self._wake_mode)
 
-        ack_row = QHBoxLayout()
-        ack_row.setSpacing(8)
-        self._ack_enabled = QCheckBox("唤醒后应一声")
+        ack_box = QWidget()
+        ack_layout = QVBoxLayout(ack_box)
+        ack_layout.setContentsMargins(0, 0, 0, 0)
+        ack_layout.setSpacing(6)
+        self._ack_enabled = QCheckBox("唤醒后应一声（随机挑一句）")
         self._ack_enabled.setChecked(cfg.wake.ack_enabled)
-        ack_row.addWidget(self._ack_enabled)
-        self._ack_texts = QLineEdit("，".join(cfg.wake.ack_texts))
-        self._ack_texts.setPlaceholderText("用逗号分隔，随机挑一句")
-        self._ack_texts.setCursorPosition(0)
-        ack_row.addWidget(self._ack_texts, 1)
-        form.addRow("唤醒回应", ack_row)
+        ack_layout.addWidget(self._ack_enabled)
+
+        ack_list_row = QHBoxLayout()
+        ack_list_row.setSpacing(8)
+        self._ack_list = QListWidget()
+        self._ack_list.setObjectName("AckList")
+        self._ack_list.setFixedHeight(132)
+        self._ack_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self._ack_list.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed | QAbstractItemView.SelectedClicked
+        )
+        for phrase in cfg.wake.ack_texts:
+            self._ack_list.addItem(QListWidgetItem(phrase))
+        ack_list_row.addWidget(self._ack_list, 1)
+
+        ack_btns = QVBoxLayout()
+        ack_btns.setSpacing(6)
+        add_ack = QPushButton("加一句")
+        add_ack.setObjectName("Ghost")
+        add_ack.clicked.connect(self._add_ack)
+        del_ack = QPushButton("删掉")
+        del_ack.setObjectName("Ghost")
+        del_ack.clicked.connect(self._delete_ack)
+        ack_btns.addWidget(add_ack)
+        ack_btns.addWidget(del_ack)
+        ack_btns.addStretch(1)
+        ack_list_row.addLayout(ack_btns)
+        ack_layout.addLayout(ack_list_row)
+        form.addRow("唤醒回应", ack_box)
 
         self._asr_backend = QComboBox()
         self._asr_backend.addItem("Vosk 本地模型", "vosk")
@@ -620,19 +649,37 @@ class SettingsDialog(QDialog):
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
 
+    def _add_ack(self) -> None:
+        item = QListWidgetItem("新的一句")
+        self._ack_list.addItem(item)
+        self._ack_list.setCurrentItem(item)
+        self._ack_list.editItem(item)
+
+    def _delete_ack(self) -> None:
+        row = self._ack_list.currentRow()
+        if row >= 0:
+            self._ack_list.takeItem(row)
+
     def _on_save(self) -> None:
         wake = self._wake.text().strip()
         if not wake:
             QMessageBox.warning(self, "提示", "唤醒词不能为空")
             return
+        ack_phrases = [
+            self._ack_list.item(i).text().strip()
+            for i in range(self._ack_list.count())
+            if self._ack_list.item(i).text().strip()
+        ]
+        if self._ack_enabled.isChecked() and not ack_phrases:
+            QMessageBox.warning(self, "提示", "至少要留一句应答，或者取消勾选「唤醒后应一声」")
+            return
         self.cfg.wake.word = wake
-        aliases = [a.strip() for a in self._aliases.text().replace("，", ",").split(",") if a.strip()]
+        aliases = [a.strip() for a in re.split(r"[，,、;；]+", self._aliases.text()) if a.strip()]
         self.cfg.wake.aliases = aliases
         self.cfg.wake.mode = self._wake_mode.currentData()
         self.cfg.wake.ack_enabled = self._ack_enabled.isChecked()
-        ack_texts = [a.strip() for a in self._ack_texts.text().replace("，", ",").split(",") if a.strip()]
-        if ack_texts:
-            self.cfg.wake.ack_texts = ack_texts
+        if ack_phrases:
+            self.cfg.wake.ack_texts = ack_phrases
         self.cfg.asr.backend = self._asr_backend.currentData()
         self.cfg.tools.default_city = self._alias_city.text().strip() or "北京"
         self.cfg.llm.base_url = self._base_url.text().strip() or self.cfg.llm.base_url

@@ -18,7 +18,7 @@ from PySide6.QtCore import QObject  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from assistant.config import AppConfig  # noqa: E402
-from assistant.ui.main_window import MainWindow  # noqa: E402
+from assistant.ui.main_window import MainWindow, SettingsDialog  # noqa: E402
 
 
 class FakeWorker(QObject):
@@ -109,6 +109,16 @@ def main() -> int:
     # ---------- 清空记忆 ----------
     window._on_clear_memory()
     checks.append(("清空记忆发出 reset", ("reset",) in fake.calls))
+
+    # ---------- 唤醒应答话术：带逗号的句子不能被拆开 ----------
+    cfg2 = AppConfig()
+    cfg2.wake.ack_texts = ["哎，我在", "来啦，你说"]
+    dialog = SettingsDialog(cfg2, window)
+    items = [dialog._ack_list.item(i).text() for i in range(dialog._ack_list.count())]
+    checks.append(("带逗号的话术原样进列表", items == ["哎，我在", "来啦，你说"]))
+    dialog._ack_list.addItem("嗯，我听着")
+    dialog._on_save()
+    checks.append(("保存后仍是一句一条", cfg2.wake.ack_texts == ["哎，我在", "来啦，你说", "嗯，我听着"]))
 
     failed = 0
     for name, ok in checks:
