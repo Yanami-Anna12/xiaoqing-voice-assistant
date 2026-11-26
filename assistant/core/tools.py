@@ -93,6 +93,7 @@ class ToolRegistry:
 
 # ---------------------------------------------------------------- 天气
 _WEATHER_CACHE: dict[str, tuple[float, str]] = {}
+_GEO_CACHE: dict[str, tuple[float, float, str]] = {}
 _CACHE_TTL = 300  # 秒
 
 
@@ -108,22 +109,27 @@ def get_weather(city: str = "") -> str:
         return cached[1]
 
     headers = {"User-Agent": "voice-assistant/1.0"}
-    geo = requests.get(
-        "https://geocoding-api.open-meteo.com/v1/search",
-        params={"name": city, "count": 1, "language": "zh", "format": "json"},
-        timeout=6,
-        headers=headers,
-    ).json()
-    results = geo.get("results") or []
-    if not results:
-        return f"没有找到{city}的位置信息，换个大一点的城市名试试。"
-    place = results[0]
-    lat, lon = place["latitude"], place["longitude"]
-    place_name = str(place.get("name", city))
-    admin = str(place.get("admin1") or "")
-    # 避免"北京市北京"这种重复
-    if admin and admin not in place_name and place_name not in admin:
-        place_name = f"{admin}{place_name}"
+    cached_geo = _GEO_CACHE.get(city)
+    if cached_geo is not None:
+        lat, lon, place_name = cached_geo
+    else:
+        geo = requests.get(
+            "https://geocoding-api.open-meteo.com/v1/search",
+            params={"name": city, "count": 1, "language": "zh", "format": "json"},
+            timeout=6,
+            headers=headers,
+        ).json()
+        results = geo.get("results") or []
+        if not results:
+            return f"没有找到{city}的位置信息，换个大一点的城市名试试。"
+        place = results[0]
+        lat, lon = place["latitude"], place["longitude"]
+        place_name = str(place.get("name", city))
+        admin = str(place.get("admin1") or "")
+        # 避免"北京市北京"这种重复
+        if admin and admin not in place_name and place_name not in admin:
+            place_name = f"{admin}{place_name}"
+        _GEO_CACHE[city] = (lat, lon, place_name)  # 同一个城市不用每次都地理编码
 
     data = requests.get(
         "https://api.open-meteo.com/v1/forecast",

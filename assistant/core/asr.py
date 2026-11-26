@@ -46,10 +46,21 @@ def resolve_model_dir(model_path: str | Path) -> Path:
 class ASRBackend(ABC):
     name: str = "unknown"
     offline: bool = True
+    streaming: bool = False  # 能否边收音频边解码（能的话几乎不用等）
 
     @abstractmethod
     def transcribe(self, pcm: bytes, sample_rate: int = 16000) -> str:
         """整句识别，返回去掉空格的中文文本（可能为空串）。"""
+
+    def start_stream(self, sample_rate: int = 16000) -> None:  # noqa: B027 - 可选钩子
+        """开始/重置一段流式识别。"""
+
+    def feed_stream(self, pcm: bytes) -> None:  # noqa: B027 - 可选钩子
+        """喂一块实时音频。"""
+
+    def finish_stream(self) -> str:
+        """结束这段流式识别，拿到结果。"""
+        return ""
 
     def warmup(self) -> None:  # noqa: B027 - 可选钩子
         """可选：提前加载模型，避免第一句话等太久。"""
@@ -62,6 +73,7 @@ class VoskASR(ASRBackend):
     """离线中文识别，模型约 40MB，CPU 实时性足够。"""
 
     name = "Vosk 离线中文模型"
+    streaming = True
 
     def __init__(self, model_path: str):
         self.requested_path = Path(model_path)
@@ -78,7 +90,10 @@ class VoskASR(ASRBackend):
             raise ASRError(f"Vosk 模型加载失败（{self.model_path}）：{exc}") from exc
         self._vosk = vosk
         self.load_seconds = time.perf_counter() - t0
+        self._rec = None
+        self._stream_rate = 16000
 
+    # ---------- 整句识别 ----------
     def transcribe(self, pcm: bytes, sample_rate: int = 16000) -> str:
         if not pcm:
             return ""
@@ -89,7 +104,24 @@ class VoskASR(ASRBackend):
         result = json.loads(rec.FinalResult() or "{}")
         return str(result.get("text", "")).replace(" ", "")
 
+    # ---------- 流式识别：边听边解码，说完就有字 ----------
+    def start_stream(self, sample_rate: int = 16000) -> None:
+        self._stream_rate = sample_rate
+        self._rec = self._vosk.KaldiRecognizer(self._model, sample_rate)
+
+    def feed_stream(self, pcm: bytes) -> None:
+        if self._rec is not None and pcm:
+            self._rec.AcceptWaveform(pcm)
+
+    def finish_stream(self) -> str:
+        rec, self._rec = self._rec, None
+        if rec is None:
+            return ""
+        result = json.loads(rec.FinalResult() or "{}")
+        return str(result.get("text", "")).replace(" ", "")
+
     def close(self) -> None:
+        self._rec = None
         self._model = None
 
 

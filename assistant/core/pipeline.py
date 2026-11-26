@@ -213,6 +213,10 @@ class AssistantWorker(QThread):
         )
         self._set_state(STATE_SLEEPING)
 
+        services = self._services
+        self._asr_streaming = bool(services and getattr(services.asr, "streaming", False))
+        self._reset_asr_stream()
+
         while not self._stop:
             self._handle_commands(segmenter)
             if self._stop:
@@ -231,16 +235,72 @@ class AssistantWorker(QThread):
                 # 朗读时自己的声音会进麦克风，直接丢弃
                 continue
 
+            services = self._services
+            wants_speech = self._state == STATE_LISTENING or (
+                self._state == STATE_SLEEPING and cfg.wake.mode == "voice"
+            )
+            if services and self._asr_streaming and wants_speech:
+                try:
+                    services.asr.feed_stream(chunk)  # 边说边解码，说完就有结果
+                except Exception:  # noqa: BLE001 - 流式失败还能退回整句识别
+                    log.exception("流式识别喂音频失败")
+                    self._asr_streaming = False
+
             if self._state == STATE_LISTENING:
                 segment = segmenter.feed(chunk)
                 if segment:
-                    self._recognize_and_reply(segment)
+                    text = self._take_transcript(segment)
+                    if text:
+                        self._recognize_and_reply(text)
                 else:
                     self._check_listen_timeout(segmenter)
             elif self._state == STATE_SLEEPING and cfg.wake.mode == "voice":
                 segment = segmenter.feed(chunk)
                 if segment:
-                    self._try_wake(segment, segmenter)
+                    text = self._take_transcript(segment)
+                    if text:
+                        self._try_wake(text, segmenter)
+
+    # ---------------------------------------------------------------- 识别
+    def _take_transcript(self, segment: bytes) -> str:
+        """优先拿流式识别的结果；没有流式能力时才整句识别。"""
+        services = self._services
+        if not services:
+            return ""
+        started = time.perf_counter()
+        text = ""
+        stream_error = False
+        if self._asr_streaming:
+            try:
+                text = services.asr.finish_stream()
+            except Exception:  # noqa: BLE001
+                log.exception("流式识别取结果失败")
+                stream_error = True
+        if not text and (not self._asr_streaming or stream_error):
+            try:
+                text = services.asr.transcribe(segment, self.cfg.asr.sample_rate)
+            except Exception as exc:  # noqa: BLE001
+                log.exception("识别失败")
+                self.notice.emit("error", f"识别出错：{exc}")
+        if self._asr_streaming:
+            try:
+                services.asr.start_stream(self.cfg.asr.sample_rate)
+            except Exception:  # noqa: BLE001
+                self._asr_streaming = False
+        log.info("识别耗时 %.0fms：%s", (time.perf_counter() - started) * 1000, text)
+        return text
+
+    def _reset_asr_stream(self) -> None:
+        if not self._asr_streaming:
+            return
+        services = self._services
+        if not services:
+            return
+        try:
+            services.asr.start_stream(self.cfg.asr.sample_rate)
+        except Exception:  # noqa: BLE001
+            log.exception("重置流式识别失败")
+            self._asr_streaming = False
 
     # ---------------------------------------------------------------- 命令
     def _handle_commands(self, segmenter: UtteranceSegmenter) -> None:
@@ -275,17 +335,9 @@ class AssistantWorker(QThread):
                 self.notice.emit("info", "已经忘掉之前的对话了")
 
     # ---------------------------------------------------------------- 唤醒与识别
-    def _try_wake(self, segment: bytes, segmenter: UtteranceSegmenter) -> None:
+    def _try_wake(self, text: str, segmenter: UtteranceSegmenter) -> None:
         services = self._services
-        if not services:
-            return
-        try:
-            text = services.asr.transcribe(segment, self.cfg.asr.sample_rate)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("识别失败")
-            self.notice.emit("error", f"识别出错：{exc}")
-            return
-        if not text:
+        if not services or not text:
             return
         log.info("唤醒检测听到：%s", text)
         self.notice.emit("info", f"听到：{text}")
@@ -327,22 +379,12 @@ class AssistantWorker(QThread):
         except Exception:  # noqa: BLE001 - 非 Windows 或没声音设备
             pass
 
-    def _recognize_and_reply(self, segment: bytes) -> None:
-        services = self._services
-        if not services:
-            return
-        self.level_changed.emit(0.0)
-        try:
-            text = services.asr.transcribe(segment, self.cfg.asr.sample_rate)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("识别失败")
-            self.notice.emit("error", f"识别出错：{exc}")
-            self._set_state(STATE_SLEEPING)
-            return
+    def _recognize_and_reply(self, text: str) -> None:
         if not text:
             self.notice.emit("warn", "没听清，再说一次？")
             self._set_state(STATE_SLEEPING)
             return
+        self.level_changed.emit(0.0)
         self._handle_text(text, source="voice")
 
     # ---------------------------------------------------------------- 对话
@@ -430,6 +472,7 @@ class AssistantWorker(QThread):
             log.info("朗读结束：%.1fs / %d 字", time.perf_counter() - started, len(text))
             if error:
                 log.warning("朗读线程异常：%r", error[0])
+            self._reset_asr_stream()  # 朗读期间没喂音频，重置一下防止串句
             self.speech_finished.emit(token)
             if not self._stop and end_state:
                 self._set_state(end_state)
@@ -439,6 +482,7 @@ class AssistantWorker(QThread):
         segmenter.reset()
         if self._audio:
             self._audio.drain()  # 丢掉唤醒那一刻的尾音
+        self._reset_asr_stream()  # 唤醒词那一段不要混进指令
         self._listen_deadline = time.time() + timeout_ms / 1000
         self._set_state(STATE_LISTENING)
 
@@ -449,15 +493,18 @@ class AssistantWorker(QThread):
         self._listen_deadline = 0.0
         segment = segmenter.flush()
         if not segment:
+            self._reset_asr_stream()
             self._set_state(STATE_SLEEPING)
             self.notice.emit("warn", "没听到声音，已回到待唤醒")
             return
-        self._recognize_and_reply(segment)
+        text = self._take_transcript(segment)
+        self._recognize_and_reply(text)
 
     def _check_listen_timeout(self, segmenter: UtteranceSegmenter) -> None:
         if self._state == STATE_LISTENING and self._listen_deadline and time.time() > self._listen_deadline:
             self._listen_deadline = 0.0
             segmenter.reset()
+            self._reset_asr_stream()
             self._set_state(STATE_SLEEPING)
             self.notice.emit("warn", "没听到内容，我先休息了")
 

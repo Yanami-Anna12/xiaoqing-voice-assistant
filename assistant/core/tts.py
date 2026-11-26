@@ -79,12 +79,88 @@ class EdgeTTS(TTSBackend):
         if not self._player:
             raise TTSError("缺少 ffplay，无法播放在线语音")
         self._stopped = False
+        # 先试流式：合成一块就播一块，省掉整句合成完的 1~2 秒等待
+        if self._stream_play(text):
+            return
         out = self._tmpdir / f"say_{int(time.time() * 1000)}.mp3"
         try:
             asyncio.run(self._synthesize(text, out))
         except Exception as exc:  # noqa: BLE001
             raise TTSError(f"Edge-TTS 合成失败：{exc}") from exc
         self._play(out, remove_after=True)
+
+    def _stream_play(self, text: str) -> bool:
+        """边合成边播；返回 False 表示一个字节都没合成出来，交给文件模式重试。"""
+        try:
+            proc = subprocess.Popen(
+                [self._player, "-nodisp", "-autoexit", "-loglevel", "error", "-f", "mp3", "-i", "pipe:0"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError as exc:
+            log.warning("启动播放进程失败：%s", exc)
+            return False
+
+        self._proc = proc
+        wrote = 0
+        first_at: float | None = None
+        started = time.perf_counter()
+        error: BaseException | None = None
+
+        async def _pump() -> None:
+            nonlocal wrote, first_at
+            communicate = self._edge_tts.Communicate(text, self.voice, rate=self._rate_str())
+            stream = communicate.stream()
+            try:
+                async for chunk in stream:
+                    if self._stopped:
+                        break
+                    if chunk.get("type") != "audio":
+                        continue
+                    data = chunk.get("data") or b""
+                    if not data:
+                        continue
+                    proc.stdin.write(data)
+                    proc.stdin.flush()
+                    wrote += len(data)
+                    if first_at is None:
+                        first_at = time.perf_counter()
+                        log.info("首块音频 %.0fms 到位（边合成边播）", (first_at - started) * 1000)
+            finally:
+                # 被打断时也要把生成器关掉，否则 aiohttp 连接会泄漏
+                aclose = getattr(stream, "aclose", None)
+                if aclose is not None:
+                    try:
+                        await aclose()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        try:
+            asyncio.run(_pump())
+        except Exception as exc:  # noqa: BLE001 - 网络中断、播放进程退出等
+            error = exc
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                rc = proc.wait(timeout=15)
+            except Exception:  # noqa: BLE001
+                proc.kill()
+                rc = -1
+            self._proc = None
+
+        if self._stopped:
+            return True
+        if wrote == 0:
+            log.warning("Edge 流式合成没出音频：%s", error or f"ffplay 退出码 {rc}")
+            return False
+        if error is not None:
+            log.warning("Edge 流式合成中断（已播 %d 字节）：%s", wrote, error)
+        return True
 
     def speak_cached(self, text: str) -> None:
         """固定话术：合成一次落盘，之后直接播放。"""
@@ -111,7 +187,7 @@ class EdgeTTS(TTSBackend):
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         try:
-            self._proc.wait()
+            rc = self._proc.wait()
         finally:
             self._proc = None
             if remove_after:
@@ -119,6 +195,9 @@ class EdgeTTS(TTSBackend):
                     path.unlink(missing_ok=True)
                 except OSError:
                     pass
+        if rc != 0 and not self._stopped:
+            # 播放进程没正常退出（设备不可用等），交给上层换离线语音
+            raise TTSError(f"播放失败（ffplay 退出码 {rc}）")
 
     async def _synthesize(self, text: str, out: Path) -> None:
         communicate = self._edge_tts.Communicate(text, self.voice, rate=self._rate_str())
