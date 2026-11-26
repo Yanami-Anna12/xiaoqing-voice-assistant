@@ -4,6 +4,5 @@ numpy>=1.24          # 音量/VAD 计算
 vosk>=0.3.45         # 离线中文语音识别
 openai>=1.30         # DeepSeek（OpenAI 兼容协议）
 requests>=2.31       # 天气工具
-edge-tts>=6.1        # 在线自然语音合成（可选，没装则退回 SAPI）
-pyttsx3>=2.90        # Windows 离线语音合成（可选）
+edge-tts>=6.1        # 在线自然语音合成（失败自动退 Windows 离线语音）
 python-dotenv>=1.0   # 从 .env 读 API Key（可选）

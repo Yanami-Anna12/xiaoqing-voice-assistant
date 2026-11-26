@@ -158,8 +158,7 @@ class AssistantWorker(QThread):
         cfg = self.cfg
         asr, asr_note = create_asr(cfg.asr)
         tts = create_tts(cfg.tts)
-        if cfg.wake.ack_enabled and cfg.tts.enabled:
-            tts.warmup([p for p in cfg.wake.ack_texts if p.strip()])  # 后台预热应答语音
+        tts.on_notice = lambda message: self.notice.emit("warn", message)
         llm, llm_note = build_llm(cfg)
         tools = build_default_registry(cfg.tools)
         memory = ConversationMemory(cfg.llm.memory_rounds)

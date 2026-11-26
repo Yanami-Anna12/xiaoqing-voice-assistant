@@ -42,6 +42,7 @@ def test_wake() -> None:
         ("小清，今天天气怎么样", True),
         ("你好小晴", True),
         ("晓晴在吗", True),
+        ("小心，你好", False),
         ("今天天气不错", False),
         ("明天要开会", False),
     ]

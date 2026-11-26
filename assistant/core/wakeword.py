@@ -62,9 +62,13 @@ class WakeWordDetector:
 
     # ---------- 内部 ----------
     def _fuzzy(self, norm: str) -> str:
-        """在句子里滑窗找与唤醒词最像的片段（名字听岔时兜底）。"""
+        """在句子里滑窗找与唤醒词最像的片段（名字听岔时兜底）。
+
+        两个字的名字（小清/小明）不做模糊匹配：两字之间只差一个字就是 0.5 相似度，
+        "小心""小麦"这种日常词会天天误唤醒。这类情况交给 aliases 显式覆盖。
+        """
         target = normalize(self.cfg.word)
-        if len(target) < 2:
+        if len(target) < 3:
             return ""
         best, best_ratio = "", 0.0
         for size in {len(target), len(target) + 1}:

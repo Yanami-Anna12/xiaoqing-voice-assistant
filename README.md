@@ -7,7 +7,7 @@
 | 1 | 唤醒 + 听写：喊名字唤醒，语音转中文 | 16k 麦克风采集 + 能量 VAD 切句 + **本地 Vosk 中文模型**识别；识别文本里匹配唤醒词即唤醒，别名 + 模糊匹配兜底；唤醒后先应一声（可关、可改）再进入聆听 |
 | 2 | 接大模型：记住最近 3 轮对话 | DeepSeek（OpenAI 兼容协议）流式无关的 chat 调用；`ConversationMemory` 定长队列保存最近 3 轮 user/assistant |
 | 3 | 调工具：模型自己判断，并执行 | 标准 function calling：`get_weather` / `get_current_time` / `calculate`，Agent 负责"调工具→回填结果→再问一次"的循环，最多 3 轮 |
-| 4 | 读出来 + 显示：TTS 朗读，界面显示对话 | Edge-TTS 神经语音，失败自动退静默（SAPI 需在配置里显式指定）；气泡里同时显示文字和工具调用轨迹，每条都能单独点喇叭重读 |
+| 4 | 读出来 + 显示：TTS 朗读，界面显示对话 | Edge-TTS 神经语音，失败自动退 **Windows 离线语音（PowerShell）**，再退静默；气泡只显示回答正文，每条都能单独点喇叭重读 |
 | 5 | Qt 界面：识别结果、回复、状态 | PySide6 深色界面：状态胶囊（待唤醒/聆听/思考/说话）、实时波形、对话气泡、记忆进度、设置面板 |
 
 ![界面预览](docs/images/ui-preview.png)
@@ -30,7 +30,7 @@ voice_assistant/
 │   │   ├── audio.py            # 麦克风采集、dBFS 音量、能量 VAD 切句
 │   │   ├── wakeword.py         # 唤醒词匹配（别名 + 拼音模糊）
 │   │   ├── asr.py              # Vosk 离线识别 / 演示识别
-│   │   ├── tts.py              # Edge-TTS / SAPI / 静默，自动降级
+│   │   ├── tts.py              # Edge-TTS / Windows 离线语音 / 静默，自动降级
 │   │   ├── llm.py              # DeepSeek 客户端 + 离线演示模型
 │   │   ├── tools.py            # 工具注册表、天气、时间、计算器
 │   │   ├── memory.py           # 最近 N 轮对话记忆
@@ -114,26 +114,28 @@ C:\Users\12966\AppData\Local\Programs\Python\Python311\python.exe app.py
 - **分层清晰**：`core/` 里每一层只干一件事，`agent.py` 是纯逻辑（不依赖 Qt、不依赖音频），`pipeline.py` 才把音频、识别、模型、朗读串起来。
 - **可替换**：ASR、TTS、LLM 都是"接口 + 多个实现 + 工厂降级"，换模型/换服务商不改主流程。
 - **不卡界面**：整条语音链路跑在 `AssistantWorker(QThread)`，界面只接收信号。
-- **降级不静默**：没有麦克风 → 打字也能用；没有 Vosk → 演示识别；没有 Key → 演示模型；Edge-TTS 掉线 → SAPI；每一步都会在状态栏和日志里说清楚。
+- **降级不静默**：没有麦克风 → 打字也能用；没有 Vosk → 演示识别；没有 Key → 演示模型；Edge-TTS 掉线 → Windows 离线语音；每一步都会在状态栏和日志里说清楚。
 
 ## 自检
 
 ```powershell
-python tools\smoke_test.py          # 25 项：唤醒/记忆/工具/Agent/VAD/TTS/Vosk 加载
+python tools\smoke_test.py          # 26 项：唤醒/记忆/工具/Agent/VAD/TTS/Vosk 加载
 python tools\pipeline_test.py       # 起线程跑：打字 → 思考 → 工具 → 回复
 python tools\pipeline_voice_test.py # 合成语音喂进管线：VAD → 识别 → 唤醒 → 工具 → 回答
 python tools\e2e_voice_test.py      # 合成语音 → Vosk 识别 → 唤醒判定 → Agent
 python tools\interaction_test.py    # 说话开关 / 无声音回待唤醒 / 气泡朗读事件
 python tools\wake_ack_test.py       # 喊「小清」→ 应答 → 聆听 → 超时回待唤醒
-python tools\ui_wiring_test.py      # 界面按钮是否真的驱动了工作线程（12 项）
+python tools\tts_fallback_test.py   # 在线 TTS 挂了要换离线语音，不能静默
+python tools\tts_watchdog_test.py   # 播放卡死时超时强停，状态能回来
+python tools\ui_wiring_test.py      # 界面按钮是否真的驱动了工作线程（14 项）
 python tools\preview_ui.py          # 生成界面图 data/preview.png
 ```
 
-最近一次实测（2026-11-24）：
+最近一次实测（2026-11-26）：
 
-- `smoke_test.py`：25/25 通过，Vosk 模型 0.3s 加载
+- `smoke_test.py`：26/26 通过，Vosk 模型 0.3s 加载（含"小心"不该唤醒的反例）
+- `tts_fallback_test.py`：5/5，在线后端失败 → 离线语音 → 全挂才静默，都有提示
 - `pipeline_voice_test.py`：识别出"小青今天北京天气怎么样"→ 命中唤醒 → 调 `get_weather` → 回答，PASS
-- `e2e_voice_test.py`：3/3 通过（唤醒、一句话唤醒+指令、非唤醒句不误触）
 
 > 小模型把"小清"识别成"小青"是正常现象，别名列表已经覆盖；
 > 若你的口音识别成别的字，把它加到「唤醒别名」里即可。
@@ -157,7 +159,7 @@ python tools\preview_ui.py          # 生成界面图 data/preview.png
 | 一直没有声音输入 | 系统设置里把默认输入设备设成麦克风；程序里「麦克风」会显示"不可用（可打字）" |
 | 喊了名字没反应 | 看状态栏"听到：xxx"的识别结果；小模型容易听岔，把识别出的字加到「唤醒别名」里；或调低设置里的模糊阈值 |
 | 回答是"我刚查了一下…"这种演示语气 | 没配 API Key，正在用离线演示模型 |
-| 朗读没声音 | 检查 `ffplay`（ffmpeg 自带）是否在 PATH；想用 Windows 自带语音，把 `data/config.json` 里 `tts.backend` 改成 `sapi` |
+| 朗读没声音 | 先看侧栏「播报」显示的是哪个后端；Edge 失败会自动切 Windows 离线语音并提示。若都失败，检查系统默认输出设备；也可把 `data/config.json` 里 `tts.backend` 改成 `sapi` 强制离线 |
 | 天气查不到 | 天气走 Open-Meteo 免费接口，需要联网 |
 | 想换成别的模型 | 设置里改「模型地址」+「模型名称」+ Key 即可（任何 OpenAI 兼容服务） |
 | 移动项目后识别挂了 | Vosk 不支持中文路径，程序会自动把模型复制到 `%LOCALAPPDATA%\XiaoQing\models` 再加载，删掉旧缓存即可重建 |
