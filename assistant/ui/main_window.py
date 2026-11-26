@@ -531,7 +531,7 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.cfg = cfg
         self.setWindowTitle("设置")
-        self.setMinimumWidth(460)
+        self.setMinimumWidth(520)
         self.setStyleSheet(build_stylesheet())
 
         layout = QVBoxLayout(self)
@@ -550,6 +550,7 @@ class SettingsDialog(QDialog):
         form.addRow("唤醒词", self._wake)
 
         self._aliases = QLineEdit("，".join(cfg.wake.aliases))
+        self._aliases.setCursorPosition(0)
         form.addRow("唤醒别名", self._aliases)
 
         self._wake_mode = QComboBox()
@@ -557,6 +558,17 @@ class SettingsDialog(QDialog):
         self._wake_mode.addItem("按钮唤醒（按开始说话）", "push")
         self._wake_mode.setCurrentIndex(0 if cfg.wake.mode == "voice" else 1)
         form.addRow("唤醒方式", self._wake_mode)
+
+        ack_row = QHBoxLayout()
+        ack_row.setSpacing(8)
+        self._ack_enabled = QCheckBox("唤醒后应一声")
+        self._ack_enabled.setChecked(cfg.wake.ack_enabled)
+        ack_row.addWidget(self._ack_enabled)
+        self._ack_texts = QLineEdit("，".join(cfg.wake.ack_texts))
+        self._ack_texts.setPlaceholderText("用逗号分隔，随机挑一句")
+        self._ack_texts.setCursorPosition(0)
+        ack_row.addWidget(self._ack_texts, 1)
+        form.addRow("唤醒回应", ack_row)
 
         self._asr_backend = QComboBox()
         self._asr_backend.addItem("Vosk 本地模型", "vosk")
@@ -617,6 +629,10 @@ class SettingsDialog(QDialog):
         aliases = [a.strip() for a in self._aliases.text().replace("，", ",").split(",") if a.strip()]
         self.cfg.wake.aliases = aliases
         self.cfg.wake.mode = self._wake_mode.currentData()
+        self.cfg.wake.ack_enabled = self._ack_enabled.isChecked()
+        ack_texts = [a.strip() for a in self._ack_texts.text().replace("，", ",").split(",") if a.strip()]
+        if ack_texts:
+            self.cfg.wake.ack_texts = ack_texts
         self.cfg.asr.backend = self._asr_backend.currentData()
         self.cfg.tools.default_city = self._alias_city.text().strip() or "北京"
         self.cfg.llm.base_url = self._base_url.text().strip() or self.cfg.llm.base_url

@@ -69,6 +69,11 @@ def _default_aliases() -> list[str]:
     ]
 
 
+def _default_ack_texts() -> list[str]:
+    """唤醒后随机挑一句应声，学小爱同学那种"我在"的感觉。"""
+    return ["我在呢", "哎，我在", "来啦，你说", "嗯，我听着"]
+
+
 @dataclass
 class WakeWordConfig:
     """唤醒设置。"""
@@ -78,6 +83,8 @@ class WakeWordConfig:
     mode: str = "voice"  # voice=喊名字唤醒；push=按按钮唤醒（安静的考试环境用）
     fuzzy_threshold: float = 0.5  # 名字被听岔时的模糊匹配阈值（0~1，越低越容易唤醒）
     followup_timeout_ms: int = 6000  # 唤醒后等指令的时间
+    ack_enabled: bool = True  # 唤醒后先应一声
+    ack_texts: list[str] = field(default_factory=_default_ack_texts)  # 随机挑一句
 
 
 @dataclass

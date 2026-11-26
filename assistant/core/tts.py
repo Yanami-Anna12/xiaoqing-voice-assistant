@@ -7,14 +7,24 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 from ..config import TTSConfig
+from ..logging_setup import get_logger
+
+log = get_logger(__name__)
+
+
+def cache_name(text: str) -> str:
+    """同一条固定话术（如唤醒应答）复用同一份合成结果，避免每次重新合成。"""
+    return "cache_" + hashlib.md5(text.encode("utf-8")).hexdigest()[:12] + ".mp3"
 
 
 class TTSError(RuntimeError):
@@ -27,6 +37,13 @@ class TTSBackend(ABC):
     @abstractmethod
     def speak(self, text: str) -> None:
         """阻塞朗读，读完返回。"""
+
+    def speak_cached(self, text: str) -> None:  # noqa: B027 - 可选钩子，默认就是普通朗读
+        """固定话术朗读：支持的实现会缓存合成结果（如唤醒应答）。"""
+        self.speak(text)
+
+    def warmup(self, texts: list[str]) -> None:  # noqa: B027 - 可选钩子
+        """预热固定话术，避免第一次用时等合成。"""
 
     def stop(self) -> None:  # noqa: B027 - 可选钩子
         """打断当前朗读（尽量做到，做不到也不影响主流程）。"""
@@ -66,10 +83,44 @@ class EdgeTTS(TTSBackend):
             asyncio.run(self._synthesize(text, out))
         except Exception as exc:  # noqa: BLE001
             raise TTSError(f"Edge-TTS 合成失败：{exc}") from exc
+        self._play(out, remove_after=True)
+
+    def speak_cached(self, text: str) -> None:
+        """固定话术：合成一次落盘，之后直接播放，唤醒应答能快 1 秒左右。"""
+        if not text.strip():
+            return
+        if not self._player:
+            raise TTSError("缺少 ffplay，无法播放在线语音")
+        self._stopped = False
+        out = self._tmpdir / cache_name(text)
+        if not out.exists() or out.stat().st_size == 0:
+            try:
+                asyncio.run(self._synthesize(text, out))
+            except Exception as exc:  # noqa: BLE001
+                raise TTSError(f"Edge-TTS 合成失败：{exc}") from exc
+        self._play(out, remove_after=False)
+
+    def warmup(self, texts: list[str]) -> None:
+        """后台把固定话术先合成好；失败无所谓，真要用时再合成。"""
+        if not self._player:
+            return
+        for text in texts:
+            text = (text or "").strip()
+            if not text:
+                continue
+            out = self._tmpdir / cache_name(text)
+            if out.exists() and out.stat().st_size > 0:
+                continue
+            try:
+                asyncio.run(self._synthesize(text, out))
+            except Exception as exc:  # noqa: BLE001
+                log.debug("预热 %r 失败：%s", text, exc)
+
+    def _play(self, path: Path, remove_after: bool) -> None:
         if self._stopped:
             return
         self._proc = subprocess.Popen(
-            [self._player, "-nodisp", "-autoexit", "-loglevel", "error", str(out)],
+            [self._player, "-nodisp", "-autoexit", "-loglevel", "error", str(path)],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -78,10 +129,11 @@ class EdgeTTS(TTSBackend):
             self._proc.wait()
         finally:
             self._proc = None
-            try:
-                out.unlink(missing_ok=True)
-            except OSError:
-                pass
+            if remove_after:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     async def _synthesize(self, text: str, out: Path) -> None:
         communicate = self._edge_tts.Communicate(text, self.voice, rate=self._rate_str())
@@ -231,6 +283,45 @@ class TTSClient:
             self._active = MockTTS()
             self.name = self._active.name
             self._active.speak(text)
+
+    def speak_cached(self, text: str) -> None:
+        """固定话术（唤醒应答）优先走缓存，支持的后端会复用合成结果。"""
+        if not self.enabled:
+            return
+        for backend in list(self.backends):
+            try:
+                self._active = backend
+                self.name = backend.name
+                backend.speak_cached(text)
+                return
+            except TTSError:
+                self.backends.remove(backend)
+        if not self.backends:
+            self._active = MockTTS()
+            self.name = self._active.name
+            self._active.speak(text)
+
+    def warmup(self, texts: list[str]) -> None:
+        """后台预热固定话术，不阻塞启动。"""
+        if not self.enabled or not texts:
+            return
+        for backend in list(self.backends):
+            if type(backend).warmup is TTSBackend.warmup:
+                continue
+            threading.Thread(
+                target=self._safe_warmup,
+                args=(backend, list(texts)),
+                name="tts-warmup",
+                daemon=True,
+            ).start()
+            return
+
+    @staticmethod
+    def _safe_warmup(backend: TTSBackend, texts: list[str]) -> None:
+        try:
+            backend.warmup(texts)
+        except Exception:  # noqa: BLE001 - 预热失败不影响正常使用
+            log.debug("TTS 预热失败", exc_info=True)
 
     def stop(self) -> None:
         if self._active:

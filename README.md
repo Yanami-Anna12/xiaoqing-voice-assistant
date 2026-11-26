@@ -4,7 +4,7 @@
 
 | # | 题目要求 | 本项目的做法 |
 |---|---------|-------------|
-| 1 | 唤醒 + 听写：喊名字唤醒，语音转中文 | 16k 麦克风采集 + 能量 VAD 切句 + **本地 Vosk 中文模型**识别；识别文本里匹配唤醒词即唤醒，别名 + 模糊匹配兜底 |
+| 1 | 唤醒 + 听写：喊名字唤醒，语音转中文 | 16k 麦克风采集 + 能量 VAD 切句 + **本地 Vosk 中文模型**识别；识别文本里匹配唤醒词即唤醒，别名 + 模糊匹配兜底；唤醒后先应一声（可关、可改）再进入聆听 |
 | 2 | 接大模型：记住最近 3 轮对话 | DeepSeek（OpenAI 兼容协议）流式无关的 chat 调用；`ConversationMemory` 定长队列保存最近 3 轮 user/assistant |
 | 3 | 调工具：模型自己判断，并执行 | 标准 function calling：`get_weather` / `get_current_time` / `calculate`，Agent 负责"调工具→回填结果→再问一次"的循环，最多 3 轮 |
 | 4 | 读出来 + 显示：TTS 朗读，界面显示对话 | Edge-TTS 神经语音，失败自动退静默（SAPI 需在配置里显式指定）；气泡里同时显示文字和工具调用轨迹，每条都能单独点喇叭重读 |
@@ -95,7 +95,7 @@ C:\Users\12966\AppData\Local\Programs\Python\Python311\python.exe app.py
 ## 怎么用
 
 1. 等左下角提示「准备就绪：喊一声「小清」试试」；
-2. 对着麦克风说：**"小清"** → 状态变「聆听」→ 再说 **"今天北京天气怎么样"**；
+2. 对着麦克风说：**"小清"** → 它先应一声（"我在呢"/"哎，我在"…随机）→ 状态变「聆听」→ 再说 **"今天北京天气怎么样"**；
 3. 助手进入「思考」，调 `get_weather`，然后「说话」朗读答案，气泡里同时显示文字和工具轨迹；
 4. 也可以一句话说完：**"小清，今天北京天气怎么样"**；
 5. 不想喊名字：点右下角 **「🎤 说话」** 开始听，再点 **「⏹ 停止聆听」** 结束——
@@ -105,7 +105,7 @@ C:\Users\12966\AppData\Local\Programs\Python\Python311\python.exe app.py
 7. 不想说话：底部输入框直接打字，回车发送；
 8. 左侧「清空记忆」= 让它忘掉前 3 轮。
 
-设置面板可以改：唤醒词、唤醒别名、唤醒方式（语音/按钮）、识别后端、默认城市、模型地址/名称/Key、记忆轮数、语音开关和音色。
+设置面板可以改：唤醒词、唤醒别名、唤醒后是否应声、回应语、唤醒方式（语音/按钮）、识别后端、默认城市、模型地址/名称/Key、记忆轮数、语音开关和音色。
 
 ![设置面板](docs/images/settings.png)
 
@@ -124,6 +124,7 @@ python tools\pipeline_test.py       # 起线程跑：打字 → 思考 → 工�
 python tools\pipeline_voice_test.py # 合成语音喂进管线：VAD → 识别 → 唤醒 → 工具 → 回答
 python tools\e2e_voice_test.py      # 合成语音 → Vosk 识别 → 唤醒判定 → Agent
 python tools\interaction_test.py    # 说话开关 / 无声音回待唤醒 / 气泡朗读事件
+python tools\wake_ack_test.py       # 喊「小清」→ 应答 → 聆听 → 超时回待唤醒
 python tools\ui_wiring_test.py      # 界面按钮是否真的驱动了工作线程（12 项）
 python tools\preview_ui.py          # 生成界面图 data/preview.png
 ```

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import queue
+import random
 import threading
 import time
 from dataclasses import dataclass, field
@@ -157,6 +158,8 @@ class AssistantWorker(QThread):
         cfg = self.cfg
         asr, asr_note = create_asr(cfg.asr)
         tts = create_tts(cfg.tts)
+        if cfg.wake.ack_enabled and cfg.tts.enabled:
+            tts.warmup([p for p in cfg.wake.ack_texts if p.strip()])  # 后台预热应答语音
         llm, llm_note = build_llm(cfg)
         tools = build_default_registry(cfg.tools)
         memory = ConversationMemory(cfg.llm.memory_rounds)
@@ -297,7 +300,33 @@ class AssistantWorker(QThread):
             # 一句话唤醒 + 指令，例如"小清，今天天气怎么样"
             self._handle_text(command, source="voice")
         else:
-            self._enter_listening(segmenter, timeout_ms=self.cfg.wake.followup_timeout_ms)
+            self._ack_wake(segmenter)
+
+    def _ack_wake(self, segmenter: UtteranceSegmenter) -> None:
+        """像小爱同学那样先应一声，再进入聆听。"""
+        cfg = self.cfg.wake
+        ack = ""
+        if cfg.ack_enabled:
+            phrases = [p.strip() for p in cfg.ack_texts if p and p.strip()]
+            ack = random.choice(phrases) if phrases else "我在呢"
+
+        if ack:
+            self.notice.emit("ok", f"{self.cfg.wake.word}：{ack}")
+            if self.cfg.tts.enabled and self._services:
+                self._speak(ack, token=0, cached=True, end_state=None)
+            else:
+                self._beep()
+        self._enter_listening(segmenter, timeout_ms=cfg.followup_timeout_ms)
+
+    @staticmethod
+    def _beep() -> None:
+        """没有语音时给个短提示音，别让用户以为没反应。"""
+        try:
+            import winsound
+
+            winsound.MessageBeep(winsound.MB_ICONASTERISK)
+        except Exception:  # noqa: BLE001 - 非 Windows 或没声音设备
+            pass
 
     def _recognize_and_reply(self, segment: bytes) -> None:
         services = self._services
@@ -352,7 +381,7 @@ class AssistantWorker(QThread):
         """
         return max(12.0, 10.0 + len(text) * 0.6)
 
-    def _speak(self, text: str, token: int = 0) -> None:
+    def _speak(self, text: str, token: int = 0, cached: bool = False, end_state: str | None = STATE_SLEEPING) -> None:
         services = self._services
         if not services or not text.strip():
             self.speech_finished.emit(token)
@@ -372,7 +401,10 @@ class AssistantWorker(QThread):
 
         def _run() -> None:
             try:
-                services.tts.speak(text)
+                if cached:
+                    services.tts.speak_cached(text)
+                else:
+                    services.tts.speak(text)
             except BaseException as exc:  # noqa: BLE001 - 朗读线程里什么异常都不能传出去
                 error.append(exc)
             finally:
@@ -400,8 +432,8 @@ class AssistantWorker(QThread):
             if error:
                 log.warning("朗读线程异常：%r", error[0])
             self.speech_finished.emit(token)
-            if not self._stop:
-                self._set_state(STATE_SLEEPING)
+            if not self._stop and end_state:
+                self._set_state(end_state)
 
     # ---------------------------------------------------------------- 状态
     def _enter_listening(self, segmenter: UtteranceSegmenter, timeout_ms: int) -> None:
